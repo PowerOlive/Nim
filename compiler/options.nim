@@ -143,8 +143,8 @@ type
     cmdIdeTools # ide tools (e.g. nimsuggest)
     cmdNimscript # evaluate nimscript
     cmdDoc0
-    cmdDoc2
-    cmdDoc2tex
+    cmdDoc      # convert .nim doc comments to HTML
+    cmdDoc2tex  # convert .nim doc comments to LaTeX
     cmdRst2html # convert a reStructuredText file to HTML
     cmdRst2tex # convert a reStructuredText file to TeX
     cmdJsondoc0
@@ -161,14 +161,23 @@ type
 
 const
   cmdBackends* = {cmdCompileToC, cmdCompileToCpp, cmdCompileToOC, cmdCompileToJS, cmdCrun}
-  cmdDocLike* = {cmdDoc0, cmdDoc2, cmdDoc2tex, cmdJsondoc0, cmdJsondoc,
+  cmdDocLike* = {cmdDoc0, cmdDoc, cmdDoc2tex, cmdJsondoc0, cmdJsondoc,
                  cmdCtags, cmdBuildindex}
 
 type
   TStringSeq* = seq[string]
   TGCMode* = enum             # the selected GC
-    gcUnselected, gcNone, gcBoehm, gcRegions, gcArc, gcOrc,
-    gcMarkAndSweep, gcHooks, gcRefc, gcV2, gcGo
+    gcUnselected = "unselected"
+    gcNone = "none"
+    gcBoehm = "boehm"
+    gcRegions = "regions"
+    gcArc = "arc"
+    gcOrc = "orc"
+    gcMarkAndSweep = "markAndSweep"
+    gcHooks = "hooks"
+    gcRefc = "refc"
+    gcV2 = "v2"
+    gcGo = "go"
     # gcRefc and the GCs that follow it use a write barrier,
     # as far as usesWriteBarrier() is concerned
 
@@ -321,6 +330,7 @@ type
     warnCounter*: int
     errorMax*: int
     maxLoopIterationsVM*: int ## VM: max iterations of all loops
+    isVmTrace*: bool
     configVars*: StringTableRef
     symbols*: StringTableRef ## We need to use a StringTableRef here as defined
                              ## symbols are always guaranteed to be style
@@ -463,7 +473,10 @@ const foreignPackageNotesDefault* = {
 proc isDefined*(conf: ConfigRef; symbol: string): bool
 
 when defined(nimDebugUtils):
+  # this allows inserting debugging utilties in all modules that import `options`
+  # with a single switch, which is useful when debugging compiler.
   import debugutils
+  export debugutils
 
 proc initConfigRefCommon(conf: ConfigRef) =
   conf.selectedGC = gcRefc
@@ -579,8 +592,8 @@ proc isDefined*(conf: ConfigRef; symbol: string): bool =
       result = conf.target.targetOS == osNintendoSwitch
     of "freertos", "lwip":
       result = conf.target.targetOS == osFreeRTOS
-    of "littleendian": result = CPU[conf.target.targetCPU].endian == platform.littleEndian
-    of "bigendian": result = CPU[conf.target.targetCPU].endian == platform.bigEndian
+    of "littleendian": result = CPU[conf.target.targetCPU].endian == littleEndian
+    of "bigendian": result = CPU[conf.target.targetCPU].endian == bigEndian
     of "cpu8": result = CPU[conf.target.targetCPU].bit == 8
     of "cpu16": result = CPU[conf.target.targetCPU].bit == 16
     of "cpu32": result = CPU[conf.target.targetCPU].bit == 32
@@ -681,6 +694,16 @@ proc setDefaultLibpath*(conf: ConfigRef) =
 
 proc canonicalizePath*(conf: ConfigRef; path: AbsoluteFile): AbsoluteFile =
   result = AbsoluteFile path.string.expandFilename
+
+proc setFromProjectName*(conf: ConfigRef; projectName: string) =
+  try:
+    conf.projectFull = canonicalizePath(conf, AbsoluteFile projectName)
+  except OSError:
+    conf.projectFull = AbsoluteFile projectName
+  let p = splitFile(conf.projectFull)
+  let dir = if p.dir.isEmpty: AbsoluteDir getCurrentDir() else: p.dir
+  conf.projectPath = AbsoluteDir canonicalizePath(conf, AbsoluteFile dir)
+  conf.projectName = p.name
 
 proc removeTrailingDirSep*(path: string): string =
   if (path.len > 0) and (path[^1] == DirSep):

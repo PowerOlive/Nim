@@ -34,7 +34,6 @@ function main() {
     }
   }
 
-  const toggleSwitch = document.querySelector('.theme-switch input[type="checkbox"]');
   function switchTheme(e) {
       if (e.target.checked) {
           document.documentElement.setAttribute('data-theme', 'dark');
@@ -45,13 +44,19 @@ function main() {
       }
   }
 
-  toggleSwitch.addEventListener('change', switchTheme, false);
+  const toggleSwitch = document.querySelector('.theme-switch input[type="checkbox"]');
+  if (toggleSwitch !== null) {
+    toggleSwitch.addEventListener('change', switchTheme, false);
+  }
 
-  const currentTheme = localStorage.getItem('theme') ? localStorage.getItem('theme') : null;
+  var currentTheme = localStorage.getItem('theme');
+  if (!currentTheme && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+    currentTheme = 'dark';
+  }
   if (currentTheme) {
     document.documentElement.setAttribute('data-theme', currentTheme);
 
-    if (currentTheme === 'dark') {
+    if (currentTheme === 'dark' && toggleSwitch !== null) {
       toggleSwitch.checked = true;
     }
   }
@@ -173,6 +178,10 @@ window.addEventListener('DOMContentLoaded', main);
 <dt><a name="foo" href="#foo"><span>foo:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"
           data-doc-search-tag="testproject: foo(a, b: SomeType)" href="testproject.html#foo.t%2CSomeType%2CSomeType">testproject: foo(a, b: SomeType)</a></li>
+          </ul></dd>
+<dt><a name="FooBuzz" href="#FooBuzz"><span>FooBuzz:</span></a></dt><dd><ul class="simple">
+<li><a class="reference external"
+          data-doc-search-tag="testproject: FooBuzz" href="testproject.html#FooBuzz">testproject: FooBuzz</a></li>
           </ul></dd>
 <dt><a name="fromUtils1" href="#fromUtils1"><span>fromUtils1:</span></a></dt><dd><ul class="simple">
 <li><a class="reference external"

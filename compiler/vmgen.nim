@@ -35,6 +35,9 @@ import
 
 from modulegraphs import getBody
 
+when defined(nimCompilerStacktraceHints):
+  import std/stackframes
+
 const
   debugEchoCode* = defined(nimVMDebug)
 
@@ -1124,8 +1127,7 @@ proc genMagic(c: PCtx; n: PNode; dest: var TDest; m: TMagic) =
     let t = skipTypes(n.typ, abstractVar-{tyTypeDesc})
     if t.kind in {tyUInt8..tyUInt32} or (t.kind == tyUInt and t.size < 8):
       c.gABC(n, opcNarrowU, dest, TRegister(t.size*8))
-  of mCharToStr, mBoolToStr, mIntToStr, mInt64ToStr,
-     mFloatToStr, mCStrToStr, mStrToStr, mEnumToStr:
+  of mCharToStr, mBoolToStr, mIntToStr, mInt64ToStr, mCStrToStr, mStrToStr, mEnumToStr:
     genConv(c, n, n[1], dest)
   of mEqStr, mEqCString: genBinaryABC(c, n, dest, opcEqStr)
   of mLeStr: genBinaryABC(c, n, dest, opcLeStr)
@@ -1359,7 +1361,7 @@ proc genMagic(c: PCtx; n: PNode; dest: var TDest; m: TMagic) =
     globalError(c.config, n.info, sizeOfLikeMsg("offsetof"))
   of mRunnableExamples:
     discard "just ignore any call to runnableExamples"
-  of mDestroy: discard "ignore calls to the default destructor"
+  of mDestroy, mTrace: discard "ignore calls to the default destructor"
   of mMove:
     let arg = n[1]
     let a = c.genx(arg)
@@ -2000,6 +2002,8 @@ proc procIsCallback(c: PCtx; s: PSym): bool =
     dec i
 
 proc gen(c: PCtx; n: PNode; dest: var TDest; flags: TGenFlags = {}) =
+  when defined(nimCompilerStacktraceHints):
+    setFrameMsg c.config$n.info & " " & $n.kind & " " & $flags
   case n.kind
   of nkSym:
     let s = n.sym

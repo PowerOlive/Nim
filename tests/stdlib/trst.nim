@@ -5,6 +5,8 @@ discard """
 
 [Suite] RST indentation
 
+[Suite] Warnings
+
 [Suite] RST include directive
 
 [Suite] RST escaping
@@ -51,9 +53,8 @@ proc toAst(input: string,
       # we don't find any files in online mode:
       result = ""
 
-    var dummyHasToc = false
-    var rst = rstParse(input, filen, line=LineRstInit, column=ColRstInit,
-                       dummyHasToc, rstOptions, myFindFile, testMsgHandler)
+    var (rst, _, _) = rstParse(input, filen, line=LineRstInit, column=ColRstInit,
+                               rstOptions, myFindFile, testMsgHandler)
     result = renderRstToStr(rst)
   except EParseError as e:
     if e.msg != "":
@@ -82,6 +83,135 @@ suite "RST parsing":
             rnDescription
               rnLeaf  'set'
         """)
+
+  test "items of 1 option list can be separated by blank lines":
+    check(dedent"""
+        -a  desc1
+
+        -b  desc2
+        """.toAst ==
+      dedent"""
+        rnOptionList
+          rnOptionListItem  order=1
+            rnOptionGroup
+              rnLeaf  '-'
+              rnLeaf  'a'
+            rnDescription
+              rnLeaf  'desc1'
+          rnOptionListItem  order=2
+            rnOptionGroup
+              rnLeaf  '-'
+              rnLeaf  'b'
+            rnDescription
+              rnLeaf  'desc2'
+      """)
+
+  test "option list has priority over definition list":
+    check(dedent"""
+        defName
+            defBody
+
+        -b  desc2
+        """.toAst ==
+      dedent"""
+        rnInner
+          rnDefList
+            rnDefItem
+              rnDefName
+                rnLeaf  'defName'
+              rnDefBody
+                rnInner
+                  rnLeaf  'defBody'
+          rnOptionList
+            rnOptionListItem  order=1
+              rnOptionGroup
+                rnLeaf  '-'
+                rnLeaf  'b'
+              rnDescription
+                rnLeaf  'desc2'
+      """)
+
+  test "RST comment":
+    check(dedent"""
+        .. comment1
+         comment2
+        someParagraph""".toAst ==
+      dedent"""
+        rnLeaf  'someParagraph'
+        """)
+
+    check(dedent"""
+        ..
+         comment1
+         comment2
+        someParagraph""".toAst ==
+      dedent"""
+        rnLeaf  'someParagraph'
+        """)
+
+  test "check that additional line right after .. ends comment":
+    check(dedent"""
+        ..
+
+         notAcomment1
+         notAcomment2
+        someParagraph""".toAst ==
+      dedent"""
+        rnInner
+          rnBlockQuote
+            rnInner
+              rnLeaf  'notAcomment1'
+              rnLeaf  ' '
+              rnLeaf  'notAcomment2'
+          rnParagraph
+            rnLeaf  'someParagraph'
+        """)
+
+  test "but blank lines after 2nd non-empty line don't end the comment":
+    check(dedent"""
+        ..
+           comment1
+
+
+         comment2
+        someParagraph""".toAst ==
+      dedent"""
+        rnLeaf  'someParagraph'
+        """)
+
+  test "using .. as separator b/w directives and block quotes":
+    check(dedent"""
+        .. note:: someNote
+    
+        ..
+    
+          someBlockQuote""".toAst ==
+      dedent"""
+        rnInner
+          rnAdmonition  adType=note
+            [nil]
+            [nil]
+            rnLeaf  'someNote'
+          rnBlockQuote
+            rnInner
+              rnLeaf  'someBlockQuote'
+        """)
+
+  test "no redundant blank lines in literal blocks":
+    check(dedent"""
+      Check::
+
+
+        code
+
+      """.toAst ==
+      dedent"""
+        rnInner
+          rnLeaf  'Check'
+          rnLeaf  ':'
+          rnLiteralBlock
+            rnLeaf  'code'
+      """)
 
 suite "RST indentation":
   test "nested bullet lists":
@@ -227,6 +357,53 @@ suite "RST indentation":
     # "template..." should be parsed as a definition list attached to ":test:":
     check inputWrong.toAst != ast
 
+suite "Warnings":
+  test "warnings for broken footnotes/links/substitutions":
+    let input = dedent"""
+      firstParagraph
+
+      footnoteRef [som]_
+
+      link `a broken Link`_
+
+      substitution |undefined subst|
+
+      link short.link_
+
+      lastParagraph
+      """
+    var warnings = new seq[string]
+    let output = input.toAst(warnings=warnings)
+    check(warnings[] == @[
+        "input(3, 14) Warning: broken link 'citation-som'",
+        "input(5, 7) Warning: broken link 'a-broken-link'",
+        "input(7, 15) Warning: unknown substitution 'undefined subst'",
+        "input(9, 6) Warning: broken link 'shortdotlink'"
+        ])
+
+  test "With include directive and blank lines at the beginning":
+    "other.rst".writeFile(dedent"""
+
+
+        firstParagraph
+
+        here brokenLink_""")
+    let input = ".. include:: other.rst"
+    var warnings = new seq[string]
+    let output = input.toAst(warnings=warnings)
+    check warnings[] == @["other.rst(5, 6) Warning: broken link 'brokenlink'"]
+    check(output == dedent"""
+      rnInner
+        rnParagraph
+          rnLeaf  'firstParagraph'
+        rnParagraph
+          rnLeaf  'here'
+          rnLeaf  ' '
+          rnRef
+            rnLeaf  'brokenLink'
+      """)
+    removeFile("other.rst")
+
 suite "RST include directive":
   test "Include whole":
     "other.rst".writeFile("**test1**")
@@ -245,7 +422,7 @@ OtherStart
 .. include:: other.rst
              :start-after: OtherStart
 """
-    doAssert "<em>Visible</em>" == rstTohtml(input, {}, defaultConfig())
+    check "<em>Visible</em>" == rstTohtml(input, {}, defaultConfig())
     removeFile("other.rst")
 
   test "Include everything before":
@@ -277,7 +454,7 @@ And this should **NOT** be visible in `docs.html`
              :start-after: OtherStart
              :end-before: OtherEnd
 """
-    doAssert "<em>Visible</em>" == rstTohtml(input, {}, defaultConfig())
+    check "<em>Visible</em>" == rstTohtml(input, {}, defaultConfig())
     removeFile("other.rst")
 
 
@@ -580,3 +757,44 @@ suite "RST inline markup":
           rnLeaf  ' '
           rnLeaf  'end'
         """)
+
+  test "URL with balanced parentheses (Markdown rule)":
+    # 2 balanced parens, 1 unbalanced:
+    check(dedent"""
+        https://en.wikipedia.org/wiki/APL_((programming_language)))""".toAst ==
+      dedent"""
+        rnInner
+          rnStandaloneHyperlink
+            rnLeaf  'https://en.wikipedia.org/wiki/APL_((programming_language))'
+          rnLeaf  ')'
+      """)
+
+    # the same for Markdown-style link:
+    check(dedent"""
+        [foo [bar]](https://en.wikipedia.org/wiki/APL_((programming_language))))""".toAst ==
+      dedent"""
+        rnInner
+          rnHyperlink
+            rnLeaf  'foo [bar]'
+            rnLeaf  'https://en.wikipedia.org/wiki/APL_((programming_language))'
+          rnLeaf  ')'
+      """)
+
+    # unbalanced (here behavior is more RST-like actually):
+    check(dedent"""
+        https://en.wikipedia.org/wiki/APL_(programming_language(""".toAst ==
+      dedent"""
+        rnInner
+          rnStandaloneHyperlink
+            rnLeaf  'https://en.wikipedia.org/wiki/APL_(programming_language'
+          rnLeaf  '('
+      """)
+
+    # unbalanced [, but still acceptable:
+    check(dedent"""
+        [my {link example](http://example.com/bracket_(symbol_[))""".toAst ==
+      dedent"""
+        rnHyperlink
+          rnLeaf  'my {link example'
+          rnLeaf  'http://example.com/bracket_(symbol_[)'
+      """)

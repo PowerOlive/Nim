@@ -10,7 +10,7 @@
 # this module does the semantic checking for expressions
 # included from sem.nim
 
-when defined(nimCompilerStackraceHints):
+when defined(nimCompilerStacktraceHints):
   import std/stackframes
 
 const
@@ -168,9 +168,7 @@ proc checkConvertible(c: PContext, targetTyp: PType, src: PNode): TConvStatus =
   elif (targetBaseTyp.kind in IntegralTypes) and
       (srcBaseTyp.kind in IntegralTypes):
     if targetTyp.kind == tyEnum and srcBaseTyp.kind == tyEnum:
-      if c.config.isDefined("nimLegacyConvEnumEnum"):
-        message(c.config, src.info, warnUser, "enum to enum conversion is now deprecated")
-      else: result = convNotLegal
+      message(c.config, src.info, warnSuspiciousEnumConv, "suspicious code: enum to enum conversion")
     # `elif` would be incorrect here
     if targetTyp.kind == tyBool:
       discard "convOk"
@@ -988,7 +986,7 @@ proc semIndirectOp(c: PContext, n: PNode, flags: TExprFlags): PNode =
             break
         if not hasErrorType:
           let typ = n[0].typ
-          msg.add(">\nbut expected one of: \n" &
+          msg.add(">\nbut expected one of:\n" &
               typeToString(typ))
           # prefer notin preferToResolveSymbols
           # t.sym != nil
@@ -1643,7 +1641,7 @@ proc takeImplicitAddr(c: PContext, n: PNode; isLent: bool): PNode =
 proc asgnToResultVar(c: PContext, n, le, ri: PNode) {.inline.} =
   if le.kind == nkHiddenDeref:
     var x = le[0]
-    if (x.typ.kind in {tyVar, tyLent} or classifyViewType(x.typ) != noView) and x.kind == nkSym and x.sym.kind == skResult:
+    if x.kind == nkSym and x.sym.kind == skResult and (x.typ.kind in {tyVar, tyLent} or classifyViewType(x.typ) != noView):
       n[0] = x # 'result[]' --> 'result'
       n[1] = takeImplicitAddr(c, ri, x.typ.kind == tyLent)
       x.typ.flags.incl tfVarIsPtr
@@ -2412,6 +2410,7 @@ proc semWhen(c: PContext, n: PNode, semCheck = true): PNode =
 proc semSetConstr(c: PContext, n: PNode): PNode =
   result = newNodeI(nkCurly, n.info)
   result.typ = newTypeS(tySet, c)
+  result.typ.flags.incl tfIsConstructor
   if n.len == 0:
     rawAddSon(result.typ, newTypeS(tyEmpty, c))
   else:
@@ -2714,8 +2713,15 @@ proc getNilType(c: PContext): PType =
     c.nilTypeCache = result
 
 proc semExpr(c: PContext, n: PNode, flags: TExprFlags = {}): PNode =
-  when defined(nimCompilerStackraceHints):
+  when defined(nimCompilerStacktraceHints):
     setFrameMsg c.config$n.info & " " & $n.kind
+  when false: # see `tdebugutils`
+    if isCompilerDebug():
+      echo (">", c.config$n.info, n, flags, n.kind)
+    defer:
+      if isCompilerDebug():
+        echo ("<", c.config$n.info, n, ?.result.typ)
+
   result = n
   if c.config.cmd == cmdIdeTools: suggestExpr(c, n)
   if nfSem in n.flags: return

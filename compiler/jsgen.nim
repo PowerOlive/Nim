@@ -29,15 +29,13 @@ implements the required case distinction.
 
 
 import
-  ast, trees, magicsys, options,
+  ast, astalgo, trees, magicsys, options,
   nversion, msgs, idents, types,
   ropes, passes, ccgutils, wordrecg, renderer,
   cgmeth, lowerings, sighashes, modulegraphs, lineinfos, rodutils,
   transf, injectdestructors, sourcemap
 
 import json, sets, math, tables, intsets, strutils
-
-from modulegraphs import ModuleGraph, PPassContext
 
 type
   TJSGen = object of PPassContext
@@ -436,7 +434,6 @@ const # magic checked op; magic unchecked op;
     mBoolToStr: ["nimBoolToStr", "nimBoolToStr"],
     mIntToStr: ["cstrToNimstr", "cstrToNimstr"],
     mInt64ToStr: ["cstrToNimstr", "cstrToNimstr"],
-    mFloatToStr: ["cstrToNimstr", "cstrToNimstr"],
     mCStrToStr: ["cstrToNimstr", "cstrToNimstr"],
     mStrToStr: ["", ""]]
 
@@ -658,9 +655,6 @@ proc arithAux(p: PProc, n: PNode, r: var TCompRes, op: TMagic) =
   of mBoolToStr: applyFormat("nimBoolToStr($1)", "nimBoolToStr($1)")
   of mIntToStr: applyFormat("cstrToNimstr(($1) + \"\")", "cstrToNimstr(($1) + \"\")")
   of mInt64ToStr: applyFormat("cstrToNimstr(($1) + \"\")", "cstrToNimstr(($1) + \"\")")
-  of mFloatToStr:
-    useMagic(p, "nimFloatToString")
-    applyFormat "cstrToNimstr(nimFloatToString($1))"
   of mCStrToStr: applyFormat("cstrToNimstr($1)", "cstrToNimstr($1)")
   of mStrToStr, mUnown, mIsolate: applyFormat("$1", "$1")
   else:
@@ -684,8 +678,7 @@ proc arith(p: PProc, n: PNode, r: var TCompRes, op: TMagic) =
     gen(p, n[1], x)
     gen(p, n[2], y)
     r.res = "($1 >>> $2)" % [x.rdLoc, y.rdLoc]
-  of mCharToStr, mBoolToStr, mIntToStr, mInt64ToStr, mFloatToStr,
-      mCStrToStr, mStrToStr, mEnumToStr:
+  of mCharToStr, mBoolToStr, mIntToStr, mInt64ToStr, mCStrToStr, mStrToStr, mEnumToStr:
     arithAux(p, n, r, op)
   of mEqRef:
     if mapType(n[1].typ) != etyBaseIndex:
@@ -2081,7 +2074,7 @@ proc genMagic(p: PProc, n: PNode, r: var TCompRes) =
       gen(p, n[1], x)
       useMagic(p, "nimCopy")
       r.res = "nimCopy(null, $1, $2)" % [x.rdLoc, genTypeInfo(p, n.typ)]
-  of mDestroy: discard "ignore calls to the default destructor"
+  of mDestroy, mTrace: discard "ignore calls to the default destructor"
   of mOrd: genOrd(p, n, r)
   of mLengthStr, mLengthSeq, mLengthOpenArray, mLengthArray:
     var x: TCompRes
@@ -2249,7 +2242,7 @@ proc genObjConstr(p: PProc, n: PNode, r: var TCompRes) =
     gen(p, val, a)
     var f = it[0].sym
     if f.loc.r == nil: f.loc.r = mangleName(p.module, f)
-    fieldIDs.incl(f.id)
+    fieldIDs.incl(lookupFieldAgain(n.typ, f).id)
 
     let typ = val.typ.skipTypes(abstractInst)
     if a.typ == etyBaseIndex:

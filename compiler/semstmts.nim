@@ -526,7 +526,7 @@ proc semVarOrLet(c: PContext, n: PNode, symkind: TSymKind): PNode =
         else:
           # BUGFIX: ``fitNode`` is needed here!
           # check type compatibility between def.typ and typ
-          def = fitNode(c, typ, def, def.info)
+          def = fitNodeForLocalVar(c, typ, def, def.info)
           #changeType(def.skipConv, typ, check=true)
       else:
         typ = def.typ.skipTypes({tyStatic, tySink}).skipIntLit(c.idgen)
@@ -1649,6 +1649,8 @@ proc bindTypeHook(c: PContext; s: PSym; n: PNode; op: TTypeAttachedOp) =
   var noError = false
   let cond = if op == attachedDestructor:
                t.len == 2 and t[0] == nil and t[1].kind == tyVar
+             elif op == attachedTrace:
+               t.len == 3 and t[0] == nil and t[1].kind == tyVar and t[2].kind == tyPointer
              else:
                t.len >= 2 and t[0] == nil
 
@@ -1673,8 +1675,12 @@ proc bindTypeHook(c: PContext; s: PSym; n: PNode; op: TTypeAttachedOp) =
         localError(c.config, n.info, errGenerated,
           "type bound operation `" & s.name.s & "` can be defined only in the same module with its type (" & obj.typeToString() & ")")
   if not noError and sfSystemModule notin s.owner.flags:
-    localError(c.config, n.info, errGenerated,
-      "signature for '" & s.name.s & "' must be proc[T: object](x: var T)")
+    if op == attachedTrace:
+      localError(c.config, n.info, errGenerated,
+        "signature for '=trace' must be proc[T: object](x: var T; env: pointer)")
+    else:
+      localError(c.config, n.info, errGenerated,
+        "signature for '" & s.name.s & "' must be proc[T: object](x: var T)")
   incl(s.flags, sfUsed)
   incl(s.flags, sfOverriden)
 
@@ -1752,9 +1758,8 @@ proc semOverride(c: PContext, s: PSym, n: PNode) =
       localError(c.config, n.info, errGenerated,
                 "signature for '" & s.name.s & "' must be proc[T: object](x: var T; y: T)")
   of "=trace":
-    bindTypeHook(c, s, n, attachedTrace)
-  of "=dispose":
-    bindTypeHook(c, s, n, attachedDispose)
+    if s.magic != mTrace:
+      bindTypeHook(c, s, n, attachedTrace)
   else:
     if sfOverriden in s.flags:
       localError(c.config, n.info, errGenerated,
@@ -1844,7 +1849,7 @@ proc semProcAux(c: PContext, n: PNode, kind: TSymKind,
 
   # before compiling the proc params & body, set as current the scope
   # where the proc was declared
-  let delcarationScope = c.currentScope
+  let declarationScope = c.currentScope
   pushOwner(c, s)
   openScope(c)
 
@@ -1889,12 +1894,17 @@ proc semProcAux(c: PContext, n: PNode, kind: TSymKind,
 
   var (proto, comesFromShadowScope) =
       if isAnon: (nil, false)
-      else: searchForProc(c, delcarationScope, s)
-  if proto == nil and sfForward in s.flags:
+      else: searchForProc(c, declarationScope, s)
+  if proto == nil and sfForward in s.flags and n[bodyPos].kind != nkEmpty:
     ## In cases such as a macro generating a proc with a gensymmed name we
     ## know `searchForProc` will not find it and sfForward will be set. In
     ## such scenarios the sym is shared between forward declaration and we
     ## can treat the `s` as the proto.
+    ## To differentiate between that happening and a macro just returning a
+    ## forward declaration that has been typed before we check if the body
+    ## is not empty. This has the sideeffect of allowing multiple forward
+    ## declarations if they share the same sym.
+    ## See the "doubly-typed forward decls" case in tmacros_issues.nim
     proto = s
   let hasProto = proto != nil
 
@@ -1916,9 +1926,9 @@ proc semProcAux(c: PContext, n: PNode, kind: TSymKind,
 
   if not hasProto and sfGenSym notin s.flags: #and not isAnon:
     if s.kind in OverloadableSyms:
-      addInterfaceOverloadableSymAt(c, delcarationScope, s)
+      addInterfaceOverloadableSymAt(c, declarationScope, s)
     else:
-      addInterfaceDeclAt(c, delcarationScope, s)
+      addInterfaceDeclAt(c, declarationScope, s)
 
   pragmaCallable(c, s, n, validPragmas)
   if not hasProto:
@@ -2153,6 +2163,7 @@ proc incMod(c: PContext, n: PNode, it: PNode, includeStmtResult: PNode) =
   var f = checkModuleName(c.config, it)
   if f != InvalidFileIdx:
     addIncludeFileDep(c, f)
+    onProcessing(c.graph, f, "include", c.module)
     if containsOrIncl(c.includedFiles, f.int):
       localError(c.config, n.info, errRecursiveDependencyX % toMsgFilename(c.config, f))
     else:

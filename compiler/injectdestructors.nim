@@ -15,7 +15,7 @@
 
 import
   intsets, strtabs, ast, astalgo, msgs, renderer, magicsys, types, idents,
-  strutils, options, dfa, lowerings, tables, modulegraphs, msgs,
+  strutils, options, dfa, lowerings, tables, modulegraphs,
   lineinfos, parampatterns, sighashes, liftdestructors, optimizer,
   varpartitions
 
@@ -73,7 +73,7 @@ proc nestedScope(parent: var Scope): Scope =
 proc p(n: PNode; c: var Con; s: var Scope; mode: ProcessMode): PNode
 proc moveOrCopy(dest, ri: PNode; c: var Con; s: var Scope; isDecl = false): PNode
 
-import sets, hashes, tables
+import sets, hashes
 
 proc hash(n: PNode): Hash = hash(cast[pointer](n))
 
@@ -244,8 +244,6 @@ template isUnpackedTuple(n: PNode): bool =
   ## we move out all elements of unpacked tuples,
   ## hence unpacked tuples themselves don't need to be destroyed
   (n.kind == nkSym and n.sym.kind == skTemp and n.sym.typ.kind == tyTuple)
-
-from strutils import parseInt
 
 proc checkForErrorPragma(c: Con; t: PType; ri: PNode; opname: string) =
   var m = "'" & opname & "' is not available for type <" & typeToString(t) & ">"
@@ -776,7 +774,7 @@ proc p(n: PNode; c: var Con; s: var Scope; mode: ProcessMode): PNode =
       result = passCopyToSink(n, c, s)
   else:
     case n.kind
-    of nkBracket, nkObjConstr, nkTupleConstr, nkClosure, nkCurly:
+    of nkBracket, nkTupleConstr, nkClosure, nkCurly:
       # Let C(x) be the construction, 'x' the vector of arguments.
       # C(x) either owns 'x' or it doesn't.
       # If C(x) owns its data, we must consume C(x).
@@ -787,18 +785,33 @@ proc p(n: PNode; c: var Con; s: var Scope; mode: ProcessMode): PNode =
       # don't destroy it"
       # but if C(x) is a ref it MUST own its data since we must destroy it
       # so then we have no choice but to use 'sinkArg'.
-      let isRefConstr = n.kind == nkObjConstr and n.typ.skipTypes(abstractInst).kind == tyRef
-      let m = if isRefConstr: sinkArg
-              elif mode == normal: normal
+      let m = if mode == normal: normal
               else: sinkArg
 
       result = copyTree(n)
-      for i in ord(n.kind in {nkObjConstr, nkClosure})..<n.len:
+      for i in ord(n.kind == nkClosure)..<n.len:
         if n[i].kind == nkExprColonExpr:
           result[i][1] = p(n[i][1], c, s, m)
         elif n[i].kind == nkRange:
           result[i][0] = p(n[i][0], c, s, m)
           result[i][1] = p(n[i][1], c, s, m)
+        else:
+          result[i] = p(n[i], c, s, m)
+    of nkObjConstr:
+      # see also the remark about `nkTupleConstr`.
+      let isRefConstr = n.typ.skipTypes(abstractInst).kind == tyRef
+      let m = if isRefConstr: sinkArg
+              elif mode == normal: normal
+              else: sinkArg
+
+      result = copyTree(n)
+      for i in 1..<n.len:
+        if n[i].kind == nkExprColonExpr:
+          let field = lookupFieldAgain(n.typ, n[i][0].sym)
+          if field != nil and sfCursor in field.flags:
+            result[i][1] = p(n[i][1], c, s, normal)
+          else:
+            result[i][1] = p(n[i][1], c, s, m)
         else:
           result[i] = p(n[i], c, s, m)
       if mode == normal and isRefConstr:
@@ -1059,7 +1072,7 @@ proc moveOrCopy(dest, ri: PNode; c: var Con; s: var Scope, isDecl = false): PNod
         result = c.genCopy(dest, ri)
         result.add p(ri, c, s, consumed)
         c.finishCopy(result, dest, isFromSink = false)
-    of nkHiddenSubConv, nkHiddenStdConv, nkConv, nkObjDownConv, nkObjUpConv:
+    of nkHiddenSubConv, nkHiddenStdConv, nkConv, nkObjDownConv, nkObjUpConv, nkCast:
       result = c.genSink(dest, p(ri, c, s, sinkArg), isDecl)
     of nkStmtListExpr, nkBlockExpr, nkIfExpr, nkCaseStmt, nkTryStmt:
       template process(child, s): untyped = moveOrCopy(dest, child, c, s, isDecl)
